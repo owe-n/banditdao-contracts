@@ -1,0 +1,20 @@
+{
+  "extends": "solhint:recommended",
+  "plugins": ["prettier"],
+  "rules": {
+    "avoid-sha3": "warn",
+    "avoid-suicide": "error",
+    "compiler-version": "off",
+    "comprehensive-interface": "warn",
+    "func-visibility": "warn",
+    "mark-callable-contracts": "warn",
+    "max-line-length": ["warn", 120],
+    "not-rely-on-block-hash": "error",
+    "not-rely-on-time": "error",
+    "payable-fallback": "error",
+    "private-vars-leading-underscore": "warn",
+    "quotes": ["warn", "double"],
+    "reentrancy": "warn",
+    "prettier/prettier": "off"
+  }
+}
