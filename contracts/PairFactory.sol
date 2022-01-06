@@ -28,7 +28,8 @@ contract PairFactory is IPairFactory {
         external
         override
         returns (Pair pair) {
-        if (tokenA || tokenB == sBNDT) revert Errors.InvalidToken(sBNDT); // sBNDT pool can not be made
+        if (tokenA == sBNDT) revert Errors.InvalidToken(tokenA); // sBNDT pool can not be made
+        if (tokenB == sBNDT) revert Errors.InvalidToken(tokenB); // sBNDT pool can not be made
         if (tokenA == tokenB) revert Errors.IdenticalAddress(tokenA, tokenB); // gas savings
         (address token0, address token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
         if (token0 == address(0)) revert Errors.ZeroAddress(token0); // gas savings
