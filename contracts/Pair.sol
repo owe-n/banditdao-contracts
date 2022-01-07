@@ -15,8 +15,6 @@ import {IPairFactory} from "./interfaces/IPairFactory.sol";
 import {IPair} from "./interfaces/IPair.sol";
 
 contract Pair is IPair, BanditLP, ReentrancyGuard {
-    using Math for uint224;
-    using Math for uint256;
     using SafeERC20 for IERC20;
     using UQ112x112 for uint224;
 
@@ -84,8 +82,8 @@ contract Pair is IPair, BanditLP, ReentrancyGuard {
         uint32 timeElapsed = blockTimestamp - blockTimestampLast; // overflow is desired
         if (timeElapsed > 0 && _reserve0 != 0 && _reserve1 != 0) {
             // * never overflows, and + overflow is desired
-            price0CumulativeLast += uint256((UQ112x112.encode(_reserve1).uqdiv(_reserve0)).mul(timeElapsed));
-            price1CumulativeLast += uint256((UQ112x112.encode(_reserve0).uqdiv(_reserve1)).mul(timeElapsed));
+            price0CumulativeLast += uint256((UQ112x112.encode(_reserve1).uqdiv(_reserve0)) * timeElapsed);
+            price1CumulativeLast += uint256((UQ112x112.encode(_reserve0).uqdiv(_reserve1)) * timeElapsed);
         }
         }
         reserve0 = uint112(balance0);
@@ -99,15 +97,15 @@ contract Pair is IPair, BanditLP, ReentrancyGuard {
         (uint112 _reserve0, uint112 _reserve1,) = getReserves(); // gas savings
         uint256 balance0 = IERC20(token0).balanceOf(address(this));
         uint256 balance1 = IERC20(token1).balanceOf(address(this));
-        uint256 amount0 = balance0.sub(_reserve0);
-        uint256 amount1 = balance1.sub(_reserve1);
+        uint256 amount0 = balance0 - _reserve0;
+        uint256 amount1 = balance1 - _reserve1;
         uint256 _totalSupply = totalSupply(); // gas savings
         if (_totalSupply == 0) {
-            liquidity = ((amount0.mul(amount1)).sqrt()).sub(MINIMUM_LIQUIDITY);
-            _mint(address(0), MINIMUM_LIQUIDITY); // permanently lock the first MINIMUM_LIQUIDITY tokens
+            liquidity = Math.sqrt(amount0 * amount1) - MINIMUM_LIQUIDITY;
+            mint(address(0), MINIMUM_LIQUIDITY); // permanently lock the first MINIMUM_LIQUIDITY tokens
         } else {
             liquidity = Math.min(
-                (amount0.mul(_totalSupply)).div(_reserve0), (amount1.mul(_totalSupply)).div(_reserve1));
+                (amount0 * _totalSupply) / _reserve0, (amount1 * _totalSupply) / _reserve1);
         }
         require(liquidity > 0, "Insufficient liquidity minted");
         _mint(to, liquidity);
@@ -125,10 +123,10 @@ contract Pair is IPair, BanditLP, ReentrancyGuard {
         uint256 liquidity = balanceOf(address(this));
         uint256 _totalSupply = totalSupply(); // gas savings
 
-        amount0 = liquidity.mul(balance0) / _totalSupply; // using balances ensures pro-rata distribution
-        amount1 = liquidity.mul(balance1) / _totalSupply; // using balances ensures pro-rata distribution
+        amount0 = (liquidity * balance0) / _totalSupply; // using balances ensures pro-rata distribution
+        amount1 = (liquidity * balance1) / _totalSupply; // using balances ensures pro-rata distribution
         require(amount0 > 0 && amount1 > 0, "Insufficient liquidity burned");
-        _burn(address(this), liquidity);
+        burn(address(this), liquidity);
         IERC20(_token0).safeTransfer(to, amount0);
         IERC20(_token1).safeTransfer(to, amount1);
         balance0 = IERC20(_token0).balanceOf(address(this));
@@ -143,7 +141,7 @@ contract Pair is IPair, BanditLP, ReentrancyGuard {
         uint256 amount1Out,
         address to,
         bytes calldata data
-    ) internal nonReentrant {
+    ) external nonReentrant {
         require(amount0Out > 0 || amount1Out > 0, "Insufficient output amount");
         (uint112 _reserve0, uint112 _reserve1,) = getReserves(); // gas savings
         require(amount0Out < _reserve0 && amount1Out < _reserve1, "Insufficient liquidity");
@@ -172,12 +170,11 @@ contract Pair is IPair, BanditLP, ReentrancyGuard {
         require(amount0In > 0 || amount1In > 0, "Insufficient input amount");
         {
             // scope for reserve{0,1}Adjusted, avoids stack too deep errors
-            uint256 balance0Adjusted = balance0.mul(1000).sub(amount0In.mul(3));
-            uint256 balance1Adjusted = balance1.mul(1000).sub(amount1In.mul(3));
-            require(balance0Adjusted.mul(balance1Adjusted) >= uint256(_reserve0)
-                .mul(_reserve1).mul(1000**2), "Invariant 'k'");
+            uint256 balance0Adjusted = (balance0 * 1000) - (amount0In * 3);
+            uint256 balance1Adjusted = (balance1 * 1000) - (amount1In * 3);
+            require((balance0Adjusted * balance1Adjusted) >= uint256(_reserve0
+                * _reserve1 * 1000**2), "Invariant 'k'");
         }
-
         _update(balance0, balance1, _reserve0, _reserve1);
         emit Swap(msg.sender, amount0In, amount1In, amount0Out, amount1Out, to);
     }
@@ -186,8 +183,8 @@ contract Pair is IPair, BanditLP, ReentrancyGuard {
     function skim(address to) external nonReentrant {
         address _token0 = token0; // gas savings
         address _token1 = token1; // gas savings
-        IERC20(_token0).safeTransfer(to, IERC20(_token0).balanceOf(address(this)).sub(reserve0));
-        IERC20(_token1).safeTransfer(to, IERC20(_token1).balanceOf(address(this)).sub(reserve1));
+        IERC20(_token0).safeTransfer(to, IERC20(_token0).balanceOf(address(this)) - reserve0);
+        IERC20(_token1).safeTransfer(to, IERC20(_token1).balanceOf(address(this)) - reserve1);
     }
 
     // force reserves to match balances

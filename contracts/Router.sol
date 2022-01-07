@@ -5,7 +5,6 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 import {Library} from "./libraries/Library.sol";
-import {Math} from "./libraries/Math.sol";
 
 import {IPairFactory} from "./interfaces/IPairFactory.sol";
 import {IRouter} from "./interfaces/IRouter.sol";
