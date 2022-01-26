@@ -8,32 +8,32 @@ import {Library} from "./libraries/Library.sol";
 
 import {IPairFactory} from "./interfaces/IPairFactory.sol";
 import {IRouter} from "./interfaces/IRouter.sol";
-import {IWAVAX} from "./interfaces/IWAVAX.sol";
+import {INative} from "./interfaces/INative.sol";
 
 contract Router is IRouter {
     using SafeERC20 for IERC20;
 
     address public immutable override factory;
-    address public immutable override WAVAX;
+    address public immutable override native;
 
     modifier ensure(uint256 deadline) {
         require(deadline >= block.timestamp, "Expired");
         _;
     }
 
-    constructor(address _factory, address _WAVAX) public {
+    constructor(address _factory, address _native) public {
         factory = _factory;
-        WAVAX = _WAVAX;
+        native = _native;
     }
 
     receive() external payable {
-        assert(msg.sender == WAVAX); // only accept AVAX via fallback from the WAVAX contract
+        assert(msg.sender == native); // only accept native chain token via fallback
     }
 
-    // helper function for transferring AVAX
-    function safeTransferAVAX(address to, uint256 value) internal {
+    // helper function for transferring native token (eg: AVAX, ETH, FTM)
+    function safeTransferNative(address to, uint256 value) internal {
         (bool success,) = to.call{value: value}(new bytes(0));
-        require(success, "AVAX transfer failed");
+        require(success, "Native transfer failed");
     }
 
     // **** ADD LIQUIDITY ****
@@ -93,11 +93,11 @@ contract Router is IRouter {
         liquidity = IPair(pair).mint(to);
     }
 
-    function addLiquidityAVAX(
+    function addLiquidityNative(
         address token,
         uint256 amountTokenDesired,
         uint256 amountTokenMin,
-        uint256 amountAVAXMin,
+        uint256 amountNativeMin,
         address to,
         uint256 deadline
     )
@@ -108,26 +108,26 @@ contract Router is IRouter {
         ensure(deadline)
         returns (
             uint256 amountToken,
-            uint256 amountAVAX,
+            uint256 amountNative,
             uint256 liquidity
         )
     {
-        (amountToken, amountAVAX) = _addLiquidity(
+        (amountToken, amountNative) = _addLiquidity(
             token,
-            WAVAX,
+            native,
             amountTokenDesired,
             msg.value,
             amountTokenMin,
-            amountAVAXMin
+            amountNativeMin
         );
-        address pair = Library.pairFor(factory, token, WAVAX);
+        address pair = Library.pairFor(factory, token, native);
         IERC20(token).safeTransferFrom(msg.sender, pair, amountToken);
-        IWAVAX(WAVAX).deposit{value: amountAVAX}();
-        assert(IWAVAX(WAVAX).transfer(pair, amountAVAX));
+        INative(native).deposit{value: amountNative}();
+        assert(INative(native).transfer(pair, amountNative));
         liquidity = IPair(pair).mint(to);
         // refund dust, if any
-        if (msg.value > amountAVAX) {
-            safeTransferAVAX(msg.sender, msg.value - amountAVAX);
+        if (msg.value > amountNative) {
+            safeTransferNative(msg.sender, msg.value - amountNative);
         }
     }
 
@@ -142,7 +142,7 @@ contract Router is IRouter {
         uint256 deadline
     ) public virtual override ensure(deadline) returns (uint256 amountA, uint256 amountB) {
         address pair = Library.pairFor(factory, tokenA, tokenB);
-        IPair(pair).transferFrom(msg.sender, pair, liquidity); // send liquidity to pair
+        IERC20(pair).safeTransferFrom(msg.sender, pair, liquidity); // send liquidity to pair
         (uint256 amount0, uint256 amount1) = IPair(pair).burn(to);
         (address token0, ) = Library.sortTokens(tokenA, tokenB);
         (amountA, amountB) = tokenA == token0 ? (amount0, amount1) : (amount1, amount0);
@@ -150,26 +150,26 @@ contract Router is IRouter {
         require(amountB >= amountBMin, "Insufficient 'B' amount");
     }
 
-    function removeLiquidityAVAX(
+    function removeLiquidityNative(
         address token,
         uint256 liquidity,
         uint256 amountTokenMin,
-        uint256 amountAVAXMin,
+        uint256 amountNativeMin,
         address to,
         uint256 deadline
-    ) public virtual override ensure(deadline) returns (uint256 amountToken, uint256 amountAVAX) {
-        (amountToken, amountAVAX) = removeLiquidity(
+    ) public virtual override ensure(deadline) returns (uint256 amountToken, uint256 amountNative) {
+        (amountToken, amountNative) = removeLiquidity(
             token,
-            WAVAX,
+            native,
             liquidity,
             amountTokenMin,
-            amountAVAXMin,
+            amountNativeMin,
             address(this),
             deadline
         );
         IERC20(token).safeTransfer(to, amountToken);
-        IWAVAX(WAVAX).withdraw(amountAVAX);
-        safeTransferAVAX(to, amountAVAX);
+        INative(native).withdraw(amountNative);
+        safeTransferNative(to, amountNative);
     }
 
     function removeLiquidityWithPermit(
@@ -192,68 +192,68 @@ contract Router is IRouter {
             tokenA, tokenB, liquidity, amountAMin, amountBMin, to, deadline);
     }
 
-    function removeLiquidityAVAXWithPermit(
+    function removeLiquidityNativeWithPermit(
         address token,
         uint256 liquidity,
         uint256 amountTokenMin,
-        uint256 amountAVAXMin,
+        uint256 amountNativeMin,
         address to,
         uint256 deadline,
         bool approveMax,
         uint8 v,
         bytes32 r,
         bytes32 s
-    ) external virtual override returns (uint256 amountToken, uint256 amountAVAX) {
-        address pair = Library.pairFor(factory, token, WAVAX);
+    ) external virtual override returns (uint256 amountToken, uint256 amountNative) {
+        address pair = Library.pairFor(factory, token, native);
         uint256 value = approveMax ? uint256(-1) : liquidity;
         IPair(pair).permit(msg.sender, address(this), value, deadline, v, r, s);
-        (amountToken, amountAVAX) = removeLiquidityAVAX(
-            token, liquidity, amountTokenMin, amountAVAXMin, to, deadline);
+        (amountToken, amountNative) = removeLiquidityNative(
+            token, liquidity, amountTokenMin, amountNativeMin, to, deadline);
     }
 
     // **** REMOVE LIQUIDITY (supporting fee-on-transfer tokens) ****
-    function removeLiquidityAVAXSupportingFeeOnTransferTokens(
+    function removeLiquidityNativeSupportingFeeOnTransferTokens(
         address token,
         uint256 liquidity,
         uint256 amountTokenMin,
-        uint256 amountAVAXMin,
+        uint256 amountNativeMin,
         address to,
         uint256 deadline
-    ) public virtual override ensure(deadline) returns (uint256 amountAVAX) {
-        (,amountAVAX) = removeLiquidity(
+    ) public virtual override ensure(deadline) returns (uint256 amountNative) {
+        (,amountNative) = removeLiquidity(
             token,
-            WAVAX,
+            native,
             liquidity,
             amountTokenMin,
-            amountAVAXMin,
+            amountNativeMin,
             address(this),
             deadline
         );
         IERC20(token).safeTransfer(to, IERC20(token).balanceOf(address(this)));
-        IWAVAX(WAVAX).withdraw(amountAVAX);
-        safeTransferAVAX(to, amountAVAX);
+        INative(native).withdraw(amountNative);
+        safeTransferNative(to, amountNative);
     }
 
-    function removeLiquidityAVAXWithPermitSupportingFeeOnTransferTokens(
+    function removeLiquidityNativeWithPermitSupportingFeeOnTransferTokens(
         address token,
         uint256 liquidity,
         uint256 amountTokenMin,
-        uint256 amountAVAXMin,
+        uint256 amountNativeMin,
         address to,
         uint256 deadline,
         bool approveMax,
         uint8 v,
         bytes32 r,
         bytes32 s
-    ) external virtual override returns (uint256 amountAVAX) {
-        address pair = Library.pairFor(factory, token, WAVAX);
+    ) external virtual override returns (uint256 amountNative) {
+        address pair = Library.pairFor(factory, token, native);
         uint256 value = approveMax ? type(uint256).max : liquidity;
         IPair(pair).permit(msg.sender, address(this), value, deadline, v, r, s);
-        amountAVAX = removeLiquidityAVAXSupportingFeeOnTransferTokens(
+        amountNative = removeLiquidityNativeSupportingFeeOnTransferTokens(
             token,
             liquidity,
             amountTokenMin,
-            amountAVAXMin,
+            amountNativeMin,
             to,
             deadline
         );
@@ -306,68 +306,68 @@ contract Router is IRouter {
         _swap(amounts, path, to);
     }
 
-    function swapExactAVAXForTokens(
+    function swapExactNativeForTokens(
         uint256 amountOutMin,
         address[] calldata path,
         address to,
         uint256 deadline
     ) external payable virtual override ensure(deadline) returns (uint256[] memory amounts) {
-        require(path[0] == WAVAX, "Invalid path");
+        require(path[0] == native, "Invalid path");
         amounts = Library.getAmountsOut(factory, msg.value, path);
         require(amounts[amounts.length - 1] >= amountOutMin, "Insufficient output amount");
-        IWAVAX(WAVAX).deposit{value: amounts[0]}();
-        assert(IWAVAX(WAVAX).transfer(Library.pairFor(factory, path[0], path[1]), amounts[0]));
+        INative(native).deposit{value: amounts[0]}();
+        assert(INative(native).transfer(Library.pairFor(factory, path[0], path[1]), amounts[0]));
         _swap(amounts, path, to);
     }
 
-    function swapTokensForExactAVAX(
+    function swapTokensForExactNative(
         uint256 amountOut,
         uint256 amountInMax,
         address[] calldata path,
         address to,
         uint256 deadline
     ) external virtual override ensure(deadline) returns (uint256[] memory amounts) {
-        require(path[path.length - 1] == WAVAX, "Invalid path");
+        require(path[path.length - 1] == native, "Invalid path");
         amounts = Library.getAmountsIn(factory, amountOut, path);
         require(amounts[0] <= amountInMax, "Excessive input amount");
         IERC20(path[0]).safeTransferFrom(msg.sender, Library.pairFor(
             factory, path[0], path[1]), amounts[0]);
         _swap(amounts, path, address(this));
-        IWAVAX(WAVAX).withdraw(amounts[amounts.length - 1]);
-        safeTransferAVAX(to, amounts[amounts.length - 1]);
+        INative(native).withdraw(amounts[amounts.length - 1]);
+        safeTransferNative(to, amounts[amounts.length - 1]);
     }
 
-    function swapExactTokensForAVAX(
+    function swapExactTokensForNative(
         uint256 amountIn,
         uint256 amountOutMin,
         address[] calldata path,
         address to,
         uint256 deadline
     ) external virtual override ensure(deadline) returns (uint256[] memory amounts) {
-        require(path[path.length - 1] == WAVAX, "Invalid path");
+        require(path[path.length - 1] == native, "Invalid path");
         amounts = Library.getAmountsOut(factory, amountIn, path);
         require(amounts[amounts.length - 1] >= amountOutMin, "Insufficient output amount");
         IERC20(path[0]).safeTransferFrom(msg.sender, Library.pairFor(factory, path[0], path[1]), amounts[0]);
         _swap(amounts, path, address(this));
-        IWAVAX(WAVAX).withdraw(amounts[amounts.length - 1]);
-        safeTransferAVAX(to, amounts[amounts.length - 1]);
+        INative(native).withdraw(amounts[amounts.length - 1]);
+        safeTransferNative(to, amounts[amounts.length - 1]);
     }
 
-    function swapAVAXForExactTokens(
+    function swapNativeForExactTokens(
         uint256 amountOut,
         address[] calldata path,
         address to,
         uint256 deadline
     ) external payable virtual override ensure(deadline) returns (uint256[] memory amounts) {
-        require(path[0] == WAVAX, "Invalid path");
+        require(path[0] == native, "Invalid path");
         amounts = Library.getAmountsIn(factory, amountOut, path);
         require(amounts[0] <= msg.value, "Excessive input amount");
-        IWAVAX(WAVAX).deposit{value: amounts[0]}();
-        assert(IWAVAX(WAVAX).transfer(Library.pairFor(factory, path[0], path[1]), amounts[0]));
+        INative(native).deposit{value: amounts[0]}();
+        assert(INative(native).transfer(Library.pairFor(factory, path[0], path[1]), amounts[0]));
         _swap(amounts, path, to);
         // refund dust, if any
         if (msg.value > amounts[0]) {
-            safeTransferAVAX(msg.sender, msg.value - amounts[0]);
+            safeTransferNative(msg.sender, msg.value - amounts[0]);
         }
     }
 
@@ -414,16 +414,16 @@ contract Router is IRouter {
         );
     }
 
-    function swapExactAVAXForTokensSupportingFeeOnTransferTokens(
+    function swapExactNativeForTokensSupportingFeeOnTransferTokens(
         uint256 amountOutMin,
         address[] calldata path,
         address to,
         uint256 deadline
     ) external payable virtual override ensure(deadline) {
-        require(path[0] == WAVAX, "Invalid path");
+        require(path[0] == native, "Invalid path");
         uint256 amountIn = msg.value;
-        IWAVAX(WAVAX).deposit{value: amountIn}();
-        assert(IWAVAX(WAVAX).transfer(Library.pairFor(factory, path[0], path[1]), amountIn));
+        INative(native).deposit{value: amountIn}();
+        assert(INative(native).transfer(Library.pairFor(factory, path[0], path[1]), amountIn));
         uint256 balanceBefore = IERC20(path[path.length - 1]).balanceOf(to);
         _swapSupportingFeeOnTransferTokens(path, to);
         require(
@@ -432,21 +432,21 @@ contract Router is IRouter {
         );
     }
 
-    function swapExactTokensForAVAXSupportingFeeOnTransferTokens(
+    function swapExactTokensForNativeSupportingFeeOnTransferTokens(
         uint256 amountIn,
         uint256 amountOutMin,
         address[] calldata path,
         address to,
         uint256 deadline
     ) external virtual override ensure(deadline) {
-        require(path[path.length - 1] == WAVAX, "Invalid path");
+        require(path[path.length - 1] == native, "Invalid path");
         IERC20(path[0]).safeTransferFrom(
             msg.sender, Library.pairFor(factory, path[0], path[1]), amountIn);
         _swapSupportingFeeOnTransferTokens(path, address(this));
-        uint256 amountOut = IERC20(WAVAX).balanceOf(address(this));
+        uint256 amountOut = IERC20(native).balanceOf(address(this));
         require(amountOut >= amountOutMin, "Insufficient output amount");
-        IWAVAX(WAVAX).withdraw(amountOut);
-        safeTransferAVAX(to, amountOut);
+        INative(native).withdraw(amountOut);
+        safeTransferNative(to, amountOut);
     }
 
     // **** LIBRARY FUNCTIONS ****
