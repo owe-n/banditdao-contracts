@@ -11,6 +11,7 @@ import {IAaveAllocator} from "./allocators/interfaces/IAaveAllocator.sol";
 import {IBandit} from "./tokens/interfaces/IBandit.sol";
 import {IBondDepository} from "./interfaces/IBondDepository.sol";
 import {IDynamicOracle} from "./interfaces/IDynamicOracle.sol";
+import {INative} from "./interfaces/INative.sol";
 import {IPair} from "./interfaces/IPair.sol";
 import {IRouter} from "./interfaces/IRouter.sol";
 import {IStaking} from "./interfaces/IStaking.sol";
@@ -27,7 +28,7 @@ contract BondDepository is AccessControl, IBondDepository, ReentrancyGuard {
     using Math for uint256;
     using PercentageMath for uint256;
     using SafeERC20 for IERC20;
-    
+
     bytes32 public constant FACTORY = keccak256("FACTORY");
     bytes32 public constant GOVERNOR = keccak256("GOVERNOR");
 
@@ -57,6 +58,7 @@ contract BondDepository is AccessControl, IBondDepository, ReentrancyGuard {
     mapping(address => uint256) public totalBNDTreleased;
     mapping(address => uint256) public userMaxPayout;
 
+    uint256 public duration; // bond vesting duration
     uint256 public amplitude; // represents the max/min discount scaled by 1000
     uint256 public currentDebt;
     // represents the max supply of the bond in BNDT
@@ -67,13 +69,15 @@ contract BondDepository is AccessControl, IBondDepository, ReentrancyGuard {
     constructor( 
         address _bondAsset, 
         address factory,
+        address governor,
         address _oracle,
         bool _isLiquidityToken,
         bool _useDynamicOracle,
         bool lendToAave) {
         bondAsset = _bondAsset;
         oracle = _oracle;
-        grantRole(FACTORY, factory);
+        _grantRole(FACTORY, factory);
+        _grantRole(GOVERNOR, governor);
         if (_isLiquidityToken == true) {
             isLiquidityToken[bondAsset] = true;
             isReserveAsset[bondAsset] = false;
@@ -89,7 +93,17 @@ contract BondDepository is AccessControl, IBondDepository, ReentrancyGuard {
         }
     }
 
-    // at genesis, verticalShift should be 0
+    receive() external payable {
+        assert(msg.sender == native); // only accept native chain token via fallback
+    }
+
+    // helper function for transferring native token (eg: AVAX, ETH, FTM)
+    function safeTransferNative(address to, uint256 value) internal {
+        (bool success,) = to.call{value: value}(new bytes(0));
+        require(success, "Native transfer failed");
+    }
+
+    // at bond genesis, verticalShift is 0
     function initialize(
         uint256 _amplitude,
         uint256 _maxDebt,
@@ -100,9 +114,7 @@ contract BondDepository is AccessControl, IBondDepository, ReentrancyGuard {
         address _sBNDT,
         address _wsBNDT,
         address _allocator,
-        address _bootstrapper,
         address _distributor,
-        address governor,
         address _pairFactory,
         address _router,
         address _staking,
@@ -118,13 +130,15 @@ contract BondDepository is AccessControl, IBondDepository, ReentrancyGuard {
         sBNDT = _sBNDT;
         wsBNDT = _wsBNDT;
         allocator = _allocator;
-        bootstrapper = _bootstrapper;
         distributor = _distributor;
-        grantRole(GOVERNOR, governor);
         pairFactory = _pairFactory;
         router = _router;
         staking = _staking;
         treasury = _treasury;
+    }
+
+    function updateDuration(uint256 newDuration) external onlyRole(GOVERNOR) {
+        duration = newDuration;
     }
 
     function updateAmplitude(uint256 newAmplitude) external onlyRole(GOVERNOR) {
@@ -139,7 +153,7 @@ contract BondDepository is AccessControl, IBondDepository, ReentrancyGuard {
         verticalShift = newVerticalShift;
     }
 
-    function bond(address beneficiary, uint256 amount) public nonReentrant {
+    function bond(address beneficiary, uint256 amount) public payable nonReentrant {
         uint112 maxPayout = uint112(maxDebt.percentMul(5)); // 0.05%
         uint112 payout = getPayout(amount);
         uint256 wsBNDTbalance = IERC20(wsBNDT).balanceOf(address(this));
@@ -149,18 +163,29 @@ contract BondDepository is AccessControl, IBondDepository, ReentrancyGuard {
         // payout is doubled because BNDT is minted for the bonder and distributor
         if (payout * 2 <= IWrappedStakedBandit(wsBNDT).wrappedToStaked(wsBNDTbalance)) {
             isPayoutWrapped[msg.sender] = true;
-            amountToUnwrap = IWrappedStakedBandit(wsBNDT).wrappedToStaked(wsBNDTbalance) - payout;
+            amountToUnwrap = IWrappedStakedBandit(wsBNDT).stakedToWrapped(
+                IWrappedStakedBandit(wsBNDT).wrappedToStaked(wsBNDTbalance) - payout);
         } else {
             require(FixedPoint.fraction(ITreasury(treasury).getRFV() - (2 * uint256(payout)),
                 IERC20(BNDT).totalSupply()).decode() > 1, "Can't mint below min intrinsic value");
         }
-        IERC20(bondAsset).safeTransferFrom(msg.sender, address(this), amount);
+        if (bondAsset == native) {
+            require(msg.value == amount, "msg.value too low");
+            INative(native).deposit{value: amount}();
+            assert(INative(native).transfer(address(this), amount));
+            // refund dust, if any
+            if (msg.value > amountNative) {
+                safeTransferNative(msg.sender, msg.value - amountNative);
+            }
+        } else {
+            IERC20(bondAsset).safeTransferFrom(msg.sender, address(this), amount);
+        }
         if (isLentOutOnAave[bondAsset] == true) {
             address aToken = IAaveAllocator(allocator).getATokenAddress(bondAsset);
             IAaveAllocator(allocator).supplyToAave(bondAsset, IERC20(bondAsset).balanceOf(address(this)));
-            depositInTreasury(IERC20(aToken).balanceOf(address(this)));
+            _depositInTreasury(IERC20(aToken).balanceOf(address(this)));
         } else {
-            depositInTreasury(IERC20(bondAsset).balanceOf(address(this)));
+            _depositInTreasury(IERC20(bondAsset).balanceOf(address(this)));
         }
         currentDebt += payout;
         userMaxPayout[beneficiary] = payout;
@@ -186,7 +211,8 @@ contract BondDepository is AccessControl, IBondDepository, ReentrancyGuard {
             BNDTreleased[msg.sender] = 0;
         }
         currentDebt -= releasable;
-        uint256 amountToUnwrap = IWrappedStakedBandit(wsBNDT).wrappedToStaked(wsBNDTbalance) - payout;
+        uint256 amountToUnwrap = IWrappedStakedBandit(wsBNDT).stakedToWrapped(
+                IWrappedStakedBandit(wsBNDT).wrappedToStaked(wsBNDTbalance) - releasable);
         if (isPayoutWrapped[msg.sender] == true) {
             IERC20(wsBNDT).safeIncreaseAllowance(wsBNDT, amountToUnwrap);
             IWrappedStakedBandit(wsBNDT).unwrap(amountToUnwrap);
@@ -209,13 +235,14 @@ contract BondDepository is AccessControl, IBondDepository, ReentrancyGuard {
     }
 
     function _calcDiscount() internal view returns (int256 output) {
-        uint256 _amplitude = amplitude; // gas savings
-        uint256 _currentDebt = currentDebt; // gas savings
-        uint256 _maxDebt = maxDebt; // gas savings
-        int256 _verticalShift = verticalShift; // gas savings
+        // gas savings
+        uint256 _amplitude = amplitude;
+        uint256 _currentDebt = currentDebt;
+        uint256 _maxDebt = maxDebt;
+        int256 _verticalShift = verticalShift;
         output = int256((_amplitude)
             * uint256(Trigonometry.cos(
-            uint256(FixedPoint.fraction(TWO_PI, _maxDebt * 2).decode()) * _currentDebt))
+            uint256(FixedPoint.fraction(Trigonometry.TWO_PI, _maxDebt * 2).decode()) * _currentDebt))
             + uint256(_verticalShift));
     }
 
@@ -261,7 +288,7 @@ contract BondDepository is AccessControl, IBondDepository, ReentrancyGuard {
                 - (this.getPriceOfBNDT().percentMul(discount)).decode());
     }
 
-    function depositInTreasury(uint256 amount) internal {
+    function _depositInTreasury(uint256 amount) internal {
         IERC20(bondAsset).safeIncreaseAllowance(treasury, amount);
         ITreasury(treasury).deposit(bondAsset, amount, isLiquidityToken[bondAsset]);
     }

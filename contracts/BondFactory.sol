@@ -42,8 +42,8 @@ contract BondFactory is AccessControl, IBondFactory {
         address _router,
         address _staking,
         address _treasury) {
-        grantRole(BOND_CREATOR, _governor);
-        grantRole(BOND_CREATOR, _pairFactory);
+        _grantRole(BOND_CREATOR, _governor);
+        _grantRole(BOND_CREATOR, _pairFactory);
         native = _native;
         nativeOracle = _nativeOracle;
         BNDT = _BNDT;
@@ -80,6 +80,7 @@ contract BondFactory is AccessControl, IBondFactory {
         bond = new BondDepository{salt: keccak256(abi.encodePacked(bondAsset))}(
             bondAsset,
             address(this),
+            governor,
             oracle,
             isLiquidityToken,
             useDynamicOracle,
@@ -95,7 +96,6 @@ contract BondFactory is AccessControl, IBondFactory {
             wsBNDT,
             allocator,
             distributor,
-            governor,
             pairFactory,
             router,
             staking,
