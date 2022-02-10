@@ -9,28 +9,19 @@ import {WrappedStakedBandit} from "./tokens/WrappedStakedBandit.sol";
 
 import {PercentageMath} from "./libraries/PercentageMath.sol";
 
-contract Governor is AccessControl {
+import {IGovernor, Proposal} from "./interfaces/IGovernor.sol";
+
+contract Governor is AccessControl, IGovernor {
     using PercentageMath for uint256;
     
     bytes32 public constant GOVERNOR = keccak256("GOVERNOR");
 
-    address public immutable dev;
     WrappedStakedBandit public immutable wsBNDT;
 
     uint256 public proposalThreshold; // minimum number of votes needed to make a proposal
     uint256 public quorum; // minimum number of votes a proposal needs (as a % of supply in hundreds)
     uint256 public timelockDuration; // time after the vote has ended before it can be executed
     uint256 public voteDuration; // time the vote lasts for
-
-    struct Proposal {
-        uint256 startBlockNumber; // for snapshot
-        uint256 startTime;
-        uint256 endTime;
-        uint256 votes;
-        uint256 yesVotes;
-        uint256 noVotes;
-        bool executed;
-    }
 
     mapping(uint256 => mapping(address => bool)) public hasVoted;
     mapping(uint256 => bool) public proposalExists;
@@ -39,13 +30,11 @@ contract Governor is AccessControl {
     uint256[] public proposalIDs;
 
     constructor(
-        address _dev,
         address _wsBNDT,
         uint256 _proposalThreshold,
         uint256 _quorum,
         uint256 _timelockDuration,
         uint256 _voteDuration) {
-        dev = _dev;
         wsBNDT = WrappedStakedBandit(_wsBNDT);
         proposalThreshold = _proposalThreshold;
         quorum = _quorum;
@@ -62,15 +51,6 @@ contract Governor is AccessControl {
     /// @param delegatee address to delegate your votes to
     function delegate(address delegatee) public {
         wsBNDT.delegate(delegatee);
-    }
-
-    /// @notice in order to vote you need to delegate to yourself so a snapshot can be recorded
-    function delegateToSelf() public {
-        delegate(msg.sender);
-    }
-
-    function delegateToDev() public {
-        delegate(dev);
     }
 
     /// @param choice pass true to vote yes or false to vote no
