@@ -5,60 +5,28 @@ import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 
 import {BondDepository} from "./BondDepository.sol";
 
-import {IBondDepository} from "./interfaces/IBondDepository.sol";
+import {Addresses, IHelper} from "./interfaces/IHelper.sol";
 import {IBondFactory} from "./interfaces/IBondFactory.sol";
 
 contract BondFactory is AccessControl, IBondFactory {
     bytes32 public constant BOND_CREATOR = keccak256("BOND_CREATOR");
 
-    address public native;
-    address public nativeOracle;
-    address public BNDT;
-    address public sBNDT;
-    address public wsBNDT;
-    address public allocator;
-    address public distributor;
-    address public governor;
-    address public pairFactory;
-    address public router;
-    address public staking;
-    address public treasury;
+    address public helper;
 
-    mapping(address => address) public override getBond;
-    address[] public override allBonds;
+    mapping(address => address) public getBond;
+    address[] public allBonds;
 
-    event BondCreated(address bond, address bondAsset);
+    /// @dev Emitted when a bond is created
+    event BondCreated(address indexed bond, address indexed bondAsset);
 
-    constructor(
-        address _native,
-        address _nativeOracle,
-        address _BNDT,
-        address _sBNDT,
-        address _wsBNDT,
-        address _allocator,
-        address _distributor,
-        address _governor,
-        address _pairFactory,
-        address _router,
-        address _staking,
-        address _treasury) {
-        _grantRole(BOND_CREATOR, _governor);
-        _grantRole(BOND_CREATOR, _pairFactory);
-        native = _native;
-        nativeOracle = _nativeOracle;
-        BNDT = _BNDT;
-        sBNDT = _sBNDT;
-        wsBNDT = _wsBNDT;
-        allocator = _allocator;
-        distributor = _distributor;
-        governor = _governor;
-        pairFactory = _pairFactory;
-        router = _router;
-        staking = _staking;
-        treasury = _treasury;
+    constructor(address _helper) {
+        helper = _helper;
+        Addresses memory _addresses = IHelper(_helper).getAddresses();
+        _grantRole(BOND_CREATOR, _addresses.governor);
+        _grantRole(BOND_CREATOR, _addresses.pairFactory);
     }
 
-    function allBondsLength() external override view returns (uint256) {
+    function allBondsLength() external view returns (uint256) {
         return allBonds.length;
     }
 
@@ -69,40 +37,35 @@ contract BondFactory is AccessControl, IBondFactory {
         uint256 maxDebt,
         int256 verticalShift,
         bool isLiquidityToken,
+        bool isStablecoin,
         bool useDynamicOracle,
-        bool lendToAave) 
+        bool lendToAave)
         external
-        override
         onlyRole(BOND_CREATOR)
-        returns (address bond) {
+        returns (BondDepository bond) {
         require(bondAsset != address(0), "Zero address");
         require(getBond[bondAsset] == address(0), "Bond already exists");
+        require(oracle != address(0), "Zero address");
+        require(amplitude > 0, "Amplitude cannot be zero");
+        require(maxDebt > 0, "Max debt cannot be zero");
+        // gas savings
+        address _helper = helper;
         bond = new BondDepository{salt: keccak256(abi.encodePacked(bondAsset))}(
             bondAsset,
-            address(this),
-            governor,
             oracle,
+            _helper,
             isLiquidityToken,
+            isStablecoin,
             useDynamicOracle,
-            lendToAave);
-        IBondDepository(bond).initialize(
+            lendToAave
+        );
+        bond.initialize(
             amplitude,
             maxDebt,
-            verticalShift,
-            native,
-            nativeOracle,
-            BNDT,
-            sBNDT,
-            wsBNDT,
-            allocator,
-            distributor,
-            pairFactory,
-            router,
-            staking,
-            treasury
+            verticalShift
         );
-        getBond[bondAsset] = bond;
+        getBond[bondAsset] = address(bond);
         allBonds.push(bondAsset);
-        emit BondCreated(bond, bondAsset);
+        emit BondCreated(address(bond), bondAsset);
     }
 }
