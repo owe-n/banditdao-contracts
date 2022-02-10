@@ -27,7 +27,6 @@ contract BondDepository is AccessControl, IBondDepository, ReentrancyGuard {
     using PercentageMath for uint256;
     using SafeERC20 for IERC20;
 
-    bytes32 public constant FACTORY = keccak256("FACTORY");
     bytes32 public constant GOVERNOR = keccak256("GOVERNOR");
 
     address public immutable helper;
@@ -36,21 +35,18 @@ contract BondDepository is AccessControl, IBondDepository, ReentrancyGuard {
     mapping(address => uint256) public bondStart;
     mapping(address => uint256) public userMaxPayout;
     mapping(address => uint256) public BNDTreleased;
-    mapping(address => uint256) public totalBNDTreleased;
     mapping(address => bool) public isPayoutWrapped;
 
     Addresses private addresses;
     BondParameters private bondParameters;
     DiscountParameters private discountParameters;
 
-    // if _bondAsset is a reserve asset and doesn't have a chainlink data feed, _useDynamicOracle should be set to true;
+    event UserBonded(address indexed user, uint256 amount, uint256 payout, bool isPayoutWrapped);
+
     constructor(
         address _bondAsset, 
         address _oracle,
         address _helper,
-        address factory,
-        address governor,
-        address treasury,
         bool _isLiquidityToken,
         bool _isStablecoin,
         bool _useDynamicOracle,
@@ -58,9 +54,6 @@ contract BondDepository is AccessControl, IBondDepository, ReentrancyGuard {
         bondParameters.bondAsset = _bondAsset;
         bondParameters.oracle = _oracle;
         helper = _helper;
-        _grantRole(FACTORY, factory);
-        _grantRole(GOVERNOR, governor);
-        _grantRole(GOVERNOR, treasury); // for maxDebt adjustments
         if (_isLiquidityToken == true) {
             bondParameters.isLiquidityToken = true;
         } else {
@@ -78,39 +71,29 @@ contract BondDepository is AccessControl, IBondDepository, ReentrancyGuard {
         _setAddresses();
     }
 
-    receive() external payable {
-        // gas savings
-        Addresses memory _addresses = addresses;
-        assert(msg.sender == _addresses.native); // only accept native chain token via fallback
-    }
-
-    // helper function for transferring native token (eg: AVAX, ETH, FTM)
-    function safeTransferNative(address to, uint256 value) internal {
-        (bool success,) = to.call{value: value}(new bytes(0));
-        require(success, "Native transfer failed");
-    }
-
     function _setAddresses() internal {
         address _helper = helper; // gas savings
         addresses = IHelper(_helper).getAddresses();
     }
 
-    // at bond genesis, verticalShift is 0
     function initialize(
         uint256 _amplitude,
         uint256 _maxDebt,
         int256 _verticalShift
-    ) external onlyRole(FACTORY) {
+    ) external {
         // gas savings
         Addresses memory _addresses = addresses;
         BondParameters memory _bondParameters = bondParameters;
 
+        require(msg.sender == _addresses.bondFactory, "Only bond factory can initialize");
         bondParameters.aToken = IAaveAllocator(_addresses.allocator)
             .getATokenAddress(_bondParameters.bondAsset);
         bondParameters.duration = 5 days; // vesting period starts at 5 days
         discountParameters.amplitude = _amplitude;
         discountParameters.maxDebt = _maxDebt;
         discountParameters.verticalShift = _verticalShift;
+        _grantRole(GOVERNOR, _addresses.governor);
+        _grantRole(GOVERNOR, _addresses.treasury); // for maxDebt adjustments
     }
 
     function getAddresses() external view returns (Addresses memory) {
@@ -129,6 +112,10 @@ contract BondDepository is AccessControl, IBondDepository, ReentrancyGuard {
         bondParameters.duration = newDuration;
     }
 
+    function updateOracle(address newOracle) external onlyRole(GOVERNOR) {
+        bondParameters.oracle = newOracle;
+    }
+
     function updateAmplitude(uint256 newAmplitude) external onlyRole(GOVERNOR) {
         discountParameters.amplitude = newAmplitude;
     }
@@ -141,7 +128,9 @@ contract BondDepository is AccessControl, IBondDepository, ReentrancyGuard {
         discountParameters.verticalShift = newVerticalShift;
     }
 
-    function bond(address beneficiary, uint256 amount) public payable nonReentrant {
+    function bond(address beneficiary, uint256 amount) public nonReentrant {
+        require(beneficiary != address(0), "Zero address");
+        require(amount > 0, "Amount must be positive");
         // gas savings
         Addresses memory _addresses = addresses;
         BondParameters memory _bondParameters = bondParameters;
@@ -163,17 +152,8 @@ contract BondDepository is AccessControl, IBondDepository, ReentrancyGuard {
         }
         discountParameters.currentDebt += payout;
         userMaxPayout[beneficiary] = payout;
-        bondStart[msg.sender] = block.timestamp;
-        if (_bondParameters.bondAsset == _addresses.native) {
-            INative(_addresses.native).deposit{value: msg.value}();
-            assert(INative(_addresses.native).transfer(address(this), msg.value));
-            // refund dust, if any
-            if (msg.value > amount) {
-                safeTransferNative(msg.sender, msg.value - amount);
-            }
-        } else {
-            IERC20(_bondParameters.bondAsset).safeTransferFrom(msg.sender, address(this), amount);
-        }
+        bondStart[beneficiary] = block.timestamp;
+        IERC20(_bondParameters.bondAsset).safeTransferFrom(msg.sender, address(this), amount);
         if (_bondParameters.isLentOutOnAave == true) {
             IAaveAllocator(_addresses.allocator)
                 .supplyToAave(_bondParameters.bondAsset,
@@ -189,6 +169,7 @@ contract BondDepository is AccessControl, IBondDepository, ReentrancyGuard {
         } else {
             IBandit(_addresses.BNDT).mint(_addresses.distributor, payout);
         }
+        emit UserBonded(beneficiary, amount, payout, isPayoutWrapped[msg.sender]);
     }
 
     function claim() public nonReentrant {
@@ -199,21 +180,22 @@ contract BondDepository is AccessControl, IBondDepository, ReentrancyGuard {
         uint256 maxPayout = userMaxPayout[msg.sender];
         uint256 releasedBNDT = BNDTreleased[msg.sender];
         require(maxPayout - releasedBNDT > 0, "Nothing to claim");
-        uint256 wsBNDTbalance = IERC20(_addresses.wsBNDT).balanceOf(address(this));
         uint256 releasable = BondHelper.vestedAmount(block.timestamp, bondStart[msg.sender],
             _bondParameters.duration, maxPayout);
         BNDTreleased[msg.sender] += releasable;
+        discountParameters.currentDebt -= releasable;
         // reset bond status if over
         if (maxPayout - releasedBNDT == 0) {
+            bondStart[msg.sender] = 0;
             userMaxPayout[msg.sender] = 0;
             BNDTreleased[msg.sender] = 0;
+            isPayoutWrapped[msg.sender] = false;
         }
-        discountParameters.currentDebt -= releasable;
-        uint256 amountToUnwrap = IWrappedStakedBandit(_addresses.wsBNDT).stakedToWrapped(
-                IWrappedStakedBandit(_addresses.wsBNDT).wrappedToStaked(wsBNDTbalance) - releasable);
         if (isPayoutWrapped[msg.sender] == true) {
+            uint256 amountToUnwrap = IWrappedStakedBandit(_addresses.wsBNDT).stakedToWrapped(releasable);
             BondHelper.unwrapAndSend(_addresses, amountToUnwrap, address(this));
+        } else {
+            IBandit(_addresses.BNDT).mint(msg.sender, releasable);
         }
-        IBandit(_addresses.BNDT).mint(msg.sender, releasable);
     }
 }
