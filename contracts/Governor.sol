@@ -25,9 +25,30 @@ contract Governor is AccessControl, IGovernor {
 
     mapping(uint256 => mapping(address => bool)) public hasVoted;
     mapping(uint256 => bool) public proposalExists;
-    mapping(uint256 => Proposal) public proposalDetails;
 
-    uint256[] public proposalIDs;
+    mapping(uint256 => Proposal) private proposalDetails;
+
+    uint256[] public proposalIds;
+
+    
+    /// @dev Emitted when a proposal is created
+    event ProposalCreated(
+        uint256 proposalId,
+        address proposer,
+        address[] targets,
+        uint256[] values,
+        string[] signatures,
+        bytes[] calldatas,
+        uint256 startTime,
+        uint256 endTime,
+        string description
+    );
+
+    /// @dev Emitted when a proposal is executed
+    event ProposalExecuted(uint256 proposalId);
+
+    /// @dev Emitted when a vote is cast
+    event VoteCasted(address indexed voter, uint256 proposalId, uint256 weight, bool decision);
 
     constructor(
         address _wsBNDT,
@@ -35,12 +56,15 @@ contract Governor is AccessControl, IGovernor {
         uint256 _quorum,
         uint256 _timelockDuration,
         uint256 _voteDuration) {
+        require(_wsBNDT != address(0), "Zero address");
         wsBNDT = WrappedStakedBandit(_wsBNDT);
         proposalThreshold = _proposalThreshold;
         quorum = _quorum;
         timelockDuration = _timelockDuration;
+        require(_voteDuration > 0, "Duration must be greater than zero");
         voteDuration = _voteDuration;
-        _grantRole(GOVERNOR, address(this));
+        _grantRole(GOVERNOR, address(this)
+    );
     }
 
     modifier onlyProposer() {
@@ -48,41 +72,48 @@ contract Governor is AccessControl, IGovernor {
         _;
     }
 
+    function getProposalDetails(uint256 proposalId) public view returns (Proposal memory) {
+        require(proposalExists[proposalId], "Proposal does not exist");
+        return proposalDetails[proposalId];
+    }
+
     /// @param delegatee address to delegate your votes to
     function delegate(address delegatee) public {
         wsBNDT.delegate(delegatee);
     }
 
-    /// @param choice pass true to vote yes or false to vote no
-    function vote(uint256 proposalIndex, bool choice) public {
+    /// @param decision pass true to vote for or false to vote against
+    function vote(uint256 proposalId, bool decision) public {
         WrappedStakedBandit _wsBNDT = wsBNDT; // gas savings
-        uint256[] memory _proposalIDs = proposalIDs; // gas savings
-        Proposal memory readDetails = proposalDetails[proposalIDs[proposalIndex]]; // gas savings
-        Proposal storage writeDetails = proposalDetails[proposalIDs[proposalIndex]]; // readability
-        uint256 proposalID = _proposalIDs[proposalIndex];
+        Proposal memory details = proposalDetails[proposalId]; // gas savings
+        Proposal storage proposal = proposalDetails[proposalId]; // readability
         uint256 userBalance = _wsBNDT.balanceOf(msg.sender);
         uint256 snapshot = _wsBNDT.getPastVotes(
-            msg.sender, readDetails.startBlockNumber);
-        require(proposalIndex <= _proposalIDs.length, "Proposal does not exist");
+            msg.sender, details.startBlockNumber);
+        uint256 weight;
+        require(proposalExists[proposalId] == false, "Proposal does not exist");
         require(snapshot > 0 && userBalance > 0, "Zero voting power");
-        require(hasVoted[proposalID][msg.sender] == false, "Already voted");
-        require(block.timestamp <= readDetails.endTime, "Vote is over");
-        hasVoted[proposalID][msg.sender] = true;
+        require(hasVoted[proposalId][msg.sender] == false, "Already voted");
+        require(block.timestamp <= details.endTime, "Vote is over");
+        hasVoted[proposalId][msg.sender] = true;
         if (userBalance > snapshot) {
-            writeDetails.votes += snapshot;
-            if (choice == true) {
-                writeDetails.yesVotes += snapshot;
+            if (decision) {
+                proposal.forVotes += snapshot;
+                proposal.totalVotes += snapshot;
             } else {
-                writeDetails.noVotes += snapshot;
+                proposal.totalVotes += snapshot;
             }
+            weight = snapshot;
         } else {
-            writeDetails.votes += userBalance;
-            if (choice == true) {
-                writeDetails.yesVotes += snapshot;
+            if (decision) {
+                proposal.forVotes += userBalance;
+                proposal.totalVotes += userBalance;
             } else {
-                writeDetails.noVotes += snapshot;
+                proposal.totalVotes += userBalance;
             }
+            weight = userBalance;
         }
+        emit VoteCasted(msg.sender, proposalId, weight, decision);
     }
 
     function createProposal(
@@ -98,12 +129,23 @@ contract Governor is AccessControl, IGovernor {
         require(targets.length > 0, "Empty proposal");
         require(proposalExists[proposalId] == false, "Proposal already exists");
         proposalExists[proposalId] = true;
-        proposalIDs.push(proposalId);
-        Proposal storage writeDetails = proposalDetails[proposalId];
-        writeDetails.startBlockNumber = block.number;
-        writeDetails.startTime = block.timestamp;
-        writeDetails.endTime = block.timestamp + _voteDuration;
-        writeDetails.executed = false;
+        proposalIds.push(proposalId);
+        Proposal storage proposal = proposalDetails[proposalId];
+        proposal.startBlockNumber = block.number;
+        proposal.startTime = block.timestamp;
+        proposal.endTime = block.timestamp + _voteDuration;
+        proposal.executed = false;
+        emit ProposalCreated(
+            proposalId,
+            msg.sender,
+            targets,
+            values,
+            new string[](targets.length),
+            calldatas,
+            block.timestamp,
+            block.timestamp + _voteDuration,
+            description
+        );
         return proposalId;
     }
 
@@ -124,18 +166,19 @@ contract Governor is AccessControl, IGovernor {
     ) public returns (uint256) {
         uint256 proposalId = _hashProposal(targets, values, calldatas, descriptionHash);
         uint256 _timelockDuration = timelockDuration; // gas savings
-        Proposal memory readDetails = proposalDetails[proposalId]; // gas savings
-        require(readDetails.executed == false, "Proposal already executed");
-        require(block.timestamp > readDetails.endTime + _timelockDuration, "Voting + timelock hasn't ended");
-        require(readDetails.votes >=
-            wsBNDT.totalSupply().percentMul(quorum), "Quorum wasn't reached");
-        require(readDetails.yesVotes > readDetails.noVotes, "Vote was not successful");
+        Proposal memory details = proposalDetails[proposalId]; // gas savings
+        require(details.executed == false, "Proposal already executed");
+        require(block.timestamp > details.endTime + _timelockDuration, "Voting + timelock hasn't ended");
+        require(details.totalVotes >= wsBNDT.getPastTotalSupply(details.startBlockNumber)
+            .percentMul(quorum), "Quorum wasn't reached");
+        require(details.forVotes > details.totalVotes.percentMul(5000) /* 50% */, "Vote was not successful");
         _execute(proposalId, targets, values, calldatas, descriptionHash);
+        emit ProposalExecuted(proposalId);
         return proposalId;
     }
 
     function _execute(
-        uint256, // proposalID
+        uint256, // proposalId
         address[] memory targets,
         uint256[] memory values,
         bytes[] memory calldatas,
@@ -148,19 +191,19 @@ contract Governor is AccessControl, IGovernor {
         }
     }
 
-    function changeProposalThreshold(uint256 newProposalThreshold) public onlyRole(GOVERNOR) {
+    function changeProposalThreshold(uint256 newProposalThreshold) external onlyRole(GOVERNOR) {
         proposalThreshold = newProposalThreshold;
     }
 
-    function changeQuorum(uint256 newQuorum) public onlyRole(GOVERNOR) {
+    function changeQuorum(uint256 newQuorum) external onlyRole(GOVERNOR) {
         quorum = newQuorum;
     }
 
-    function changeTimelockDuration(uint256 newTimelockDuration) public onlyRole(GOVERNOR) {
+    function changeTimelockDuration(uint256 newTimelockDuration) external onlyRole(GOVERNOR) {
         timelockDuration = newTimelockDuration;
     }
 
-    function changeVoteDuration(uint256 newVoteDuration) public onlyRole(GOVERNOR) {
+    function changeVoteDuration(uint256 newVoteDuration) external onlyRole(GOVERNOR) {
         voteDuration = newVoteDuration;
     }
 }

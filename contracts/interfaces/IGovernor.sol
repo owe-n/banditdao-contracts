@@ -9,9 +9,8 @@ struct Proposal {
         uint256 startBlockNumber; // for snapshot
         uint256 startTime;
         uint256 endTime;
-        uint256 votes;
-        uint256 yesVotes;
-        uint256 noVotes;
+        uint256 totalVotes;
+        uint256 forVotes;
         bool executed;
     }
 
@@ -32,9 +31,9 @@ interface IGovernor is IAccessControl {
 
     function proposalExists(uint256 proposalID) external view returns (bool);
 
-    function proposalIDs(uint256 index) external view returns (uint256 proposalID);
+    function proposalIds(uint256 index) external view returns (uint256 proposalID);
 
-    function proposalDetails(uint256 proposalID) external view returns (Proposal memory);
+    function getProposalDetails(uint256 proposalId) external view returns (Proposal memory);
 
     function delegate(address delegatee) external;
 
