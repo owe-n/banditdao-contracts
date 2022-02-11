@@ -3,6 +3,8 @@ pragma solidity ^0.8.11;
 
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 
+import {Addresses} from "../../interfaces/IHelper.sol";
+
 interface IAaveAllocator is IAccessControl {
     function BOND_DEPO() external pure returns (bytes32);
     
@@ -14,11 +16,13 @@ interface IAaveAllocator is IAccessControl {
 
     function incentivesController() external view returns (address);
 
+    function helper() external view returns (address);
+
     function referralCode() external view returns (uint16);
 
     function lastATokenBalance(address) external view returns (uint256);
 
-    function changeReferralCode(uint16 newReferralCode) external;
+    function getAddresses() external view returns (Addresses memory);
 
     function supplyToAave(address asset, uint256 amount) external returns (address aToken);
 

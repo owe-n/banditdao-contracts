@@ -7,7 +7,8 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 
 import {PercentageMath} from "../libraries/PercentageMath.sol";
 
-import {IAaveAllocator} from "./interfaces/IAaveAllocator.sol";
+import {Addresses, IAaveAllocator} from "./interfaces/IAaveAllocator.sol";
+import {IHelper} from "../interfaces/IHelper.sol";
 import {ILiquidityMining} from "./interfaces/ILiquidityMining.sol";
 import {ILendingPoolAddressesProvider} from "./interfaces/ILendingPoolAddressesProvider.sol";
 import {ILendingPool} from "./interfaces/ILendingPool.sol";
@@ -23,23 +24,39 @@ contract AaveAllocator is AccessControl, IAaveAllocator {
 
 	address public immutable addressProvider;
 	address public immutable incentivesController;
+	address public immutable helper;
 
 	uint16 public referralCode;
 
 	mapping(address => uint256) public lastATokenBalance;
 
+	Addresses private addresses;
+
 	constructor(
 		address _addressProvider,
 		address _incentivesController,
-		address bondFactory,
-		address governor,
-		address treasury) {
+		address _helper) {
+		require(_addressProvider != address(0), "Zero address");
 		addressProvider = _addressProvider;
+		require(_incentivesController != address(0), "Zero address");
 		incentivesController = _incentivesController;
+		require(_helper != address(0), "Zero address");
+		helper = _helper;
 		referralCode = 0;
-		_grantRole(BOND_DEPO, bondFactory);
-		_grantRole(GOVERNOR, governor);
-		_grantRole(TREASURY, treasury);
+		_setAddresses();
+		Addresses memory _addresses = addresses;
+		_grantRole(BOND_DEPO, _addresses.bondFactory);
+		_grantRole(GOVERNOR, _addresses.governor);
+		_grantRole(TREASURY, _addresses.treasury);
+	}
+
+	function _setAddresses() internal {
+        address _helper = helper; // gas savings
+        addresses = IHelper(_helper).getAddresses();
+    }
+
+	function getAddresses() external view returns (Addresses memory) {
+		return addresses;
 	}
 
 	function changeReferralCode(uint16 newReferralCode) external onlyRole(GOVERNOR) {
@@ -56,7 +73,7 @@ contract AaveAllocator is AccessControl, IAaveAllocator {
 		ILendingPool lendingPool = ILendingPool(lendingPoolAddress);
 		IERC20(asset).safeIncreaseAllowance(address(lendingPool), amount);
 		lendingPool.deposit(asset, amount, msg.sender, referralCode);
-		aToken = this.getATokenAddress(asset);
+		aToken = getATokenAddress(asset);
 		lastATokenBalance[aToken] = amount;
 	}
 
@@ -70,7 +87,7 @@ contract AaveAllocator is AccessControl, IAaveAllocator {
 		returns (uint256 amount_, uint256 rewards_) {
 		address lendingPoolAddress = ILendingPoolAddressesProvider(addressProvider).getLendingPool();
 		ILendingPool lendingPool = ILendingPool(lendingPoolAddress);
-		address aToken = this.getATokenAddress(asset);
+		address aToken = getATokenAddress(asset);
 		uint256 balance = IERC20(aToken).balanceOf(msg.sender);
 		address[] memory assets;
 		assets = new address[](1);
@@ -89,7 +106,7 @@ contract AaveAllocator is AccessControl, IAaveAllocator {
 		}
 	}
 
-    function getATokenAddress(address asset) external view returns (address aToken) {
+    function getATokenAddress(address asset) public view returns (address aToken) {
 		bytes32 id = bytes32(bytes1(uint8(1))); // protocol data provider id = 0x1;
 		address dataProviderAddress = ILendingPoolAddressesProvider(addressProvider).getAddress(id);
 		IProtocolDataProvider protocolDataProvider = IProtocolDataProvider(dataProviderAddress);
