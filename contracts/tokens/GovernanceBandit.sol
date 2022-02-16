@@ -17,56 +17,50 @@ contract GovernanceBandit is ERC20, ERC20Permit, ERC20Votes, IGovernanceBandit {
     using PercentageMath for uint256;
     using SafeERC20 for IERC20;
 
-    address public immutable sBNDT;
+    IStakedBandit public immutable sBNDT;
     address public immutable treasury;
+
+    event Wrap(address indexed user, uint256 sBNDTamount, uint256 gBNDTamount);
+    event Unwrap(address indexed user, uint256 gBNDTamount, uint256 sBNDTamount);
 
     constructor(address helper) ERC20("GovernanceBandit", "gBNDT") ERC20Permit("GovernanceBandit") {
         require(helper != address(0), "Zero address");
         Addresses memory addresses = IHelper(helper).getAddresses();
-        sBNDT = addresses.sBNDT;
+        sBNDT = IStakedBandit(addresses.sBNDT);
         treasury = addresses.treasury;
     }
 
-    /**
-        @notice wrap sBNDT
-        @param amount uint256
-     */
+    
+    /// @notice wrap sBNDT to gBNDT
     function wrap(uint256 amount) public returns (uint256 value) {
-        address _sBNDT = sBNDT; // gas savings
+        IStakedBandit _sBNDT = sBNDT; // gas savings
         IERC20(_sBNDT).safeTransferFrom(msg.sender, address(this), amount);
         value = stakedToWrapped(amount);
         _mint(msg.sender, value);
+        emit Wrap(msg.sender, amount, value);
     }
 
-    /**
-        @notice unwrap sBNDT
-        @param amount uint
-     */
+    /// @notice unwrap gBNDT to sBNDT
     function unwrap(uint256 amount) public returns (uint256 value) {
-        address _sBNDT = sBNDT; // gas savings
+        IStakedBandit _sBNDT = sBNDT; // gas savings
         _burn(msg.sender, amount);
         value = wrappedToStaked(amount);
         IERC20(_sBNDT).safeTransfer(msg.sender, value);
+        emit Unwrap(msg.sender, amount, value);
     }
 
-    /**
-        @notice converts wsBNDT amount to sBNDT
-        @param amount uint256
-        @return uint256
-     */
+    
+    /// @notice converts gBNDT amount to sBNDT
     function wrappedToStaked(uint256 amount) public view returns (uint256) {
-        address _sBNDT = sBNDT; // gas savings
-        return ((amount * IStakedBandit(_sBNDT).index()).percentDiv(100)) / 10 ** decimals();
+        IStakedBandit _sBNDT = sBNDT; // gas savings
+        return amount.percentMul(_sBNDT.index());
     }
 
-    /**
-        @notice converts sBNDT amount to wsBNDT
-        @param amount uint
-        @return uint
-     */
+    
+    /// @notice converts sBNDT amount to gBNDT
     function stakedToWrapped(uint256 amount) public view returns (uint256) {
-        address _sBNDT = sBNDT; // gas savings
-        return (amount * 10 ** decimals()) / (IStakedBandit(_sBNDT).index()).percentDiv(100);
+        IStakedBandit _sBNDT = sBNDT; // gas savings
+        return amount.percentDiv(_sBNDT.index());
     }
 
     function circulatingSupply() public view returns (uint256) {
